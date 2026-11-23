@@ -31,6 +31,9 @@ Sem Electron, sem Node.js e sem empacotar um Chromium inteiro — ele usa o **Mi
   - Abas roláveis com indicador visual de aba ativa.
   - Botões de **Nova aba (`+`)**, **Recarregar (`↻`)**, **Minimizar**, **Maximizar/Restaurar** e **Fechar**.
 - **Renomear abas**: clique duplo no nome da aba para personalizar (ex.: `Trabalho`, `Pessoal`, `Suporte`).
+- **Notificações desktop nativas do Windows**:
+  - Permissões de notificação, reprodução de áudio e downloads liberadas automaticamente no WhatsApp Web (sem bloquear o alerta por falta de prompt).
+  - Balões **Toast nativos do Windows** com nome do contato, prévia da mensagem, conta/aba de origem e clique direto para abrir a conversa.
 - **Contador de notificações em tempo real**:
   - Badge verde por aba na barra superior.
   - Soma total no título da janela.

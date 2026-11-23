@@ -2,6 +2,7 @@
 
 mod badge;
 mod config;
+mod notify;
 mod tab_bar;
 
 #[cfg(target_os = "windows")]
@@ -22,7 +23,8 @@ use tao::{
 };
 use wry::{
     dpi::{LogicalPosition, LogicalSize},
-    NewWindowResponse, Rect, WebContext, WebView, WebViewBuilder,
+    NewWindowResponse, PermissionKind, PermissionResponse, Rect, WebContext, WebView,
+    WebViewBuilder,
 };
 
 #[cfg(target_os = "windows")]
@@ -410,6 +412,18 @@ enum IpcCommand {
 enum UserEvent {
     Ipc(IpcCommand),
     TitleChanged { tab_id: u64, title: String },
+    WebNotification {
+        tab_id: u64,
+        notif_id: u64,
+        title: String,
+        body: String,
+        silent: bool,
+    },
+    #[cfg(target_os = "windows")]
+    NotificationClicked {
+        tab_id: u64,
+        notif_id: u64,
+    },
     #[cfg(target_os = "windows")]
     RestoreWindow,
     #[cfg(target_os = "windows")]
@@ -448,6 +462,7 @@ fn create_whatsapp_webview(
     visible: bool,
 ) -> wry::Result<WebView> {
     let tab_id = saved.id;
+    let ipc_proxy = proxy.clone();
     let mut builder = WebViewBuilder::new_with_web_context(web_context)
         .with_url(WHATSAPP_URL)
         .with_bounds(bounds)
@@ -456,6 +471,31 @@ fn create_whatsapp_webview(
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(|url| is_allowed_url(&url))
         .with_new_window_req_handler(|_url, _features| NewWindowResponse::Deny)
+        .with_permission_handler(|kind| match kind {
+            PermissionKind::Notifications
+            | PermissionKind::ClipboardRead
+            | PermissionKind::Autoplay
+            | PermissionKind::AutomaticDownloads => PermissionResponse::Allow,
+            _ => PermissionResponse::Default,
+        })
+        .with_initialization_script(notify::NOTIFICATION_SHIM_JS)
+        .with_ipc_handler(move |request| {
+            if let Ok(notify::WhatsAppIpcCommand::WebNotification {
+                notif_id,
+                title,
+                body,
+                silent,
+            }) = serde_json::from_str(request.body())
+            {
+                let _ = ipc_proxy.send_event(UserEvent::WebNotification {
+                    tab_id,
+                    notif_id,
+                    title,
+                    body,
+                    silent,
+                });
+            }
+        })
         .with_document_title_changed_handler(move |title| {
             let _ = proxy.send_event(UserEvent::TitleChanged { tab_id, title });
         });
@@ -524,6 +564,8 @@ fn update_notifications(
 
 fn main() -> wry::Result<()> {
     let data_dir = app_data_dir();
+    #[cfg(target_os = "windows")]
+    let toast_icon_path = notify::ensure_toast_registered(&data_dir);
     let config_path = data_dir.join("tabs.json");
     let mut config = AppConfig::load(&config_path);
     let _ = config.save(&config_path);
@@ -699,6 +741,62 @@ fn main() -> wry::Result<()> {
                         &mut tray_icon,
                     );
                     sync_tab_bar(&tab_bar, &config, &runtimes);
+                }
+            }
+            Event::UserEvent(UserEvent::WebNotification {
+                tab_id,
+                notif_id,
+                title,
+                body,
+                silent,
+            }) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let tab_name = if config.tabs.len() > 1 {
+                        config
+                            .tabs
+                            .iter()
+                            .find(|t| t.id == tab_id)
+                            .map(|t| t.name.as_str())
+                    } else {
+                        None
+                    };
+                    let click_proxy = proxy.clone();
+                    notify::show_windows_toast(
+                        &toast_icon_path,
+                        tab_name,
+                        &title,
+                        &body,
+                        silent,
+                        move || {
+                            let _ = click_proxy
+                                .send_event(UserEvent::NotificationClicked { tab_id, notif_id });
+                        },
+                    );
+                }
+                #[cfg(not(target_os = "windows"))]
+                let _ = (tab_id, notif_id, title, body, silent);
+            }
+            #[cfg(target_os = "windows")]
+            Event::UserEvent(UserEvent::NotificationClicked { tab_id, notif_id }) => {
+                window.set_minimized(false);
+                window.set_focus();
+                if tab_id != config.active_id && runtimes.contains_key(&tab_id) {
+                    if let Some(prev) = runtimes.get(&config.active_id) {
+                        let _ = prev.webview.set_visible(false);
+                    }
+                    if let Some(target) = runtimes.get(&tab_id) {
+                        let _ = target.webview.set_visible(true);
+                        let _ = target.webview.focus();
+                    }
+                    config.active_id = tab_id;
+                    let _ = config.save(&config_path);
+                    sync_tab_bar(&tab_bar, &config, &runtimes);
+                }
+                if let Some(target) = runtimes.get(&tab_id) {
+                    let _ = target.webview.evaluate_script(&format!(
+                        "window.__rustzappClickNotif && window.__rustzappClickNotif({notif_id});"
+                    ));
                 }
             }
             #[cfg(target_os = "windows")]
