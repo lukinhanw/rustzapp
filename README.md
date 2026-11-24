@@ -24,7 +24,7 @@ Sem Electron, sem Node.js e sem empacotar um Chromium inteiro — ele usa o **Mi
 
 ## Principais recursos
 
-- **Abertura direta e exclusiva no WhatsApp Web**: abre imediatamente em `https://web.whatsapp.com/`, bloqueando navegação para domínios externos e bloqueando pop-ups.
+- **Abertura direta e exclusiva no WhatsApp Web**: abre imediatamente em `https://web.whatsapp.com/`, sem sair do WhatsApp: links recebidos nas conversas abrem no **navegador padrão do Windows** (só `http`, `https` e `mailto`), e a janela nunca navega para outros sites nem abre pop-ups.
 - **Múltiplas contas com cookies independentes**: cada aba recebe um perfil isolado do WebView2 (`wa_1`, `wa_2`, ...), permitindo conectar vários números de WhatsApp na mesma janela sem conflito de sessão.
 - **Barra de título customizada (frameless)**: remove a barra padrão do Windows e integra na mesma faixa de `40px`:
   - Ícone do aplicativo + área arrastável (com duplo clique para maximizar/restaurar e redimensionamento pelas bordas).

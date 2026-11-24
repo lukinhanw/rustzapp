@@ -146,6 +146,22 @@ pub fn is_allowed_url(raw: &str) -> bool {
     }
 }
 
+/// Link clicado numa conversa que deve abrir no navegador padrão do Windows.
+/// Só `http`, `https` e `mailto` (fora do próprio WhatsApp Web): uma mensagem não
+/// pode disparar `file:`, `javascript:` ou protocolos de outros programas.
+/// Retorna a URL normalizada pelo parser.
+pub fn external_link(raw: &str) -> Option<String> {
+    if is_allowed_url(raw) {
+        return None;
+    }
+    let parsed = Url::parse(raw).ok()?;
+    match parsed.scheme() {
+        "http" | "https" if parsed.host_str().is_some_and(|h| !h.is_empty()) => Some(parsed.into()),
+        "mailto" => Some(parsed.into()),
+        _ => None,
+    }
+}
+
 /// Extrai a contagem de mensagens não lidas do título do WhatsApp Web, ex: `"(3) WhatsApp"` -> `Some("3")`.
 pub fn parse_unread_count(title: &str) -> Option<String> {
     let trimmed = title.trim_start();
@@ -186,6 +202,22 @@ mod tests {
         assert!(!is_allowed_url("javascript:alert(1)"));
         assert!(!is_allowed_url("file:///C:/Windows/System32"));
         assert!(!is_allowed_url("not a url"));
+    }
+
+    #[test]
+    fn external_links_only_web_and_mail() {
+        assert_eq!(external_link("https://google.com/a?b=1").as_deref(), Some("https://google.com/a?b=1"));
+        assert_eq!(external_link("http://example.com").as_deref(), Some("http://example.com/"));
+        assert_eq!(external_link("https://www.whatsapp.com/faq").as_deref(), Some("https://www.whatsapp.com/faq"));
+        assert!(external_link("mailto:ana@example.com").is_some());
+
+        assert!(external_link("https://web.whatsapp.com/").is_none());
+        assert!(external_link("about:blank").is_none());
+        assert!(external_link("javascript:alert(1)").is_none());
+        assert!(external_link("file:///C:/Windows/System32/cmd.exe").is_none());
+        assert!(external_link("ms-settings:privacy").is_none());
+        assert!(external_link("blob:https://evil.com/123").is_none());
+        assert!(external_link("not a url").is_none());
     }
 
     #[test]

@@ -2,13 +2,16 @@
 
 mod badge;
 mod config;
+mod external;
 mod notify;
 mod tab_bar;
 
 #[cfg(target_os = "windows")]
 use badge::create_badge_icon;
 use badge::{compute_total_unread, format_badge_label, render_badge_rgba, render_whatsapp_icon_rgba};
-use config::{app_data_dir, is_allowed_url, parse_unread_count, AppConfig, SavedTab, WHATSAPP_URL};
+use config::{
+    app_data_dir, external_link, is_allowed_url, parse_unread_count, AppConfig, SavedTab, WHATSAPP_URL,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
@@ -470,7 +473,14 @@ fn create_whatsapp_webview(
         .with_background_color((17, 27, 33, 255))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(|url| is_allowed_url(&url))
-        .with_new_window_req_handler(|_url, _features| NewWindowResponse::Deny)
+        // Links das conversas abrem em "nova janela" (target=_blank): em vez de
+        // bloquear, entrega ao navegador padrão do Windows. Nunca abre janela aqui.
+        .with_new_window_req_handler(|url, _features| {
+            if let Some(link) = external_link(&url) {
+                external::open_in_default_browser(&link);
+            }
+            NewWindowResponse::Deny
+        })
         .with_permission_handler(|kind| match kind {
             PermissionKind::Notifications
             | PermissionKind::ClipboardRead
@@ -667,6 +677,13 @@ fn main() -> wry::Result<()> {
             return Err(err);
         }
     };
+    // O WebView2 amplia o conteúdo pelo "Tamanho do texto" do Windows (ex.: 120%),
+    // mas a faixa da barra tem altura fixa em pixels lógicos: o HTML não caberia
+    // e as margens ficariam desiguais. Na barra (só nela) o zoom é compensado.
+    let text_scale = tab_bar::windows_text_scale();
+    if (text_scale - 1.0).abs() > f64::EPSILON {
+        let _ = tab_bar.zoom(1.0 / text_scale);
+    }
 
     let mut runtimes: HashMap<u64, TabRuntime> = HashMap::new();
     for saved in &config.tabs {
