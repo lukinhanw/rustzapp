@@ -3,6 +3,7 @@
 mod badge;
 mod config;
 mod external;
+mod lock;
 mod notify;
 mod tab_bar;
 
@@ -16,8 +17,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::sync::{Arc, OnceLock};
+use lock::PasswordLock;
 use tab_bar::{
-    render_tabs_script, set_maximized_script, TabViewState, TAB_BAR_HEIGHT, TAB_BAR_HTML,
+    lock_error_script, lock_state_script, render_tabs_script, set_maximized_script, TabViewState,
+    PASSWORD_SAVED_SCRIPT, TAB_BAR_HEIGHT, TAB_BAR_HTML,
 };
 use tao::{
     event::{Event, WindowEvent},
@@ -409,6 +412,12 @@ enum IpcCommand {
     Minimize,
     ToggleMaximize,
     CloseWindow,
+    Lock,
+    Unlock { password: String },
+    /// `new` vazio remove a senha; com senha definida, `current` precisa conferir.
+    SetPassword { current: String, new: String },
+    /// A tela de definir/alterar senha abriu ou fechou.
+    Overlay { on: bool },
 }
 
 #[derive(Debug)]
@@ -454,6 +463,33 @@ fn compute_bounds(window: &Window) -> (Rect, Rect) {
         size: LogicalSize::new(width, (height - TAB_BAR_HEIGHT).max(1.0)).into(),
     };
     (bar_bounds, content_bounds)
+}
+
+/// A faixa da barra; com o WhatsApp coberto (bloqueado ou tela de senha), a janela toda.
+fn bar_rect(window: &Window, covered: bool) -> Rect {
+    let (bar_bounds, _) = compute_bounds(window);
+    if !covered {
+        return bar_bounds;
+    }
+    let logical = window.inner_size().to_logical::<f64>(window.scale_factor());
+    Rect {
+        position: LogicalPosition::new(0.0, 0.0).into(),
+        size: LogicalSize::new(logical.width.max(1.0), logical.height.max(TAB_BAR_HEIGHT + 1.0)).into(),
+    }
+}
+
+/// Esconde o WhatsApp atrás da tela de senha da barra, ou mostra de volta.
+fn apply_cover(window: &Window, tab_bar: &WebView, runtimes: &HashMap<u64, TabRuntime>, active_id: u64, covered: bool) {
+    let _ = tab_bar.set_bounds(bar_rect(window, covered));
+    let active = runtimes.get(&active_id);
+    if let Some(rt) = active {
+        let _ = rt.webview.set_visible(!covered);
+    }
+    if covered {
+        let _ = tab_bar.focus();
+    } else if let Some(rt) = active {
+        let _ = rt.webview.focus();
+    }
 }
 
 fn create_whatsapp_webview(
@@ -643,13 +679,17 @@ fn main() -> wry::Result<()> {
         &render_whatsapp_icon_rgba(),
     );
 
-    let (bar_bounds, content_bounds) = compute_bounds(&window);
+    // Com senha definida o app abre bloqueado. `overlay`: a tela de definir/alterar senha está aberta.
+    let mut locked = config.lock.is_some();
+    let mut overlay = false;
+
+    let (_, content_bounds) = compute_bounds(&window);
     let mut web_context = WebContext::new(Some(data_dir.join("webview_data")));
 
     let ipc_proxy = proxy.clone();
     let mut bar_builder = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_html(TAB_BAR_HTML)
-        .with_bounds(bar_bounds)
+        .with_bounds(bar_rect(&window, locked))
         .with_background_color((17, 27, 33, 255))
         .with_devtools(false)
         .with_ipc_handler(move |request| {
@@ -687,7 +727,7 @@ fn main() -> wry::Result<()> {
 
     let mut runtimes: HashMap<u64, TabRuntime> = HashMap::new();
     for saved in &config.tabs {
-        let visible = saved.id == config.active_id;
+        let visible = saved.id == config.active_id && !locked;
         let webview = create_whatsapp_webview(
             &window,
             &mut web_context,
@@ -729,8 +769,8 @@ fn main() -> wry::Result<()> {
                 if new_size.width == 0 || new_size.height == 0 {
                     return;
                 }
-                let (new_bar_bounds, new_content_bounds) = compute_bounds(&window);
-                let _ = tab_bar.set_bounds(new_bar_bounds);
+                let (_, new_content_bounds) = compute_bounds(&window);
+                let _ = tab_bar.set_bounds(bar_rect(&window, locked || overlay));
                 for rt in runtimes.values() {
                     let _ = rt.webview.set_bounds(new_content_bounds);
                 }
@@ -740,8 +780,8 @@ fn main() -> wry::Result<()> {
                 event: WindowEvent::ScaleFactorChanged { .. },
                 ..
             } => {
-                let (new_bar_bounds, new_content_bounds) = compute_bounds(&window);
-                let _ = tab_bar.set_bounds(new_bar_bounds);
+                let (_, new_content_bounds) = compute_bounds(&window);
+                let _ = tab_bar.set_bounds(bar_rect(&window, locked || overlay));
                 for rt in runtimes.values() {
                     let _ = rt.webview.set_bounds(new_content_bounds);
                 }
@@ -769,7 +809,13 @@ fn main() -> wry::Result<()> {
             }) => {
                 #[cfg(target_os = "windows")]
                 {
-                    let tab_name = if config.tabs.len() > 1 {
+                    // bloqueado: o balão não mostra contato, mensagem nem aba
+                    let (title, body) = if locked {
+                        ("WhatsApp Browser".to_string(), "Nova mensagem (desbloqueie para ver)".to_string())
+                    } else {
+                        (title, body)
+                    };
+                    let tab_name = if config.tabs.len() > 1 && !locked {
                         config
                             .tabs
                             .iter()
@@ -802,7 +848,7 @@ fn main() -> wry::Result<()> {
                     if let Some(prev) = runtimes.get(&config.active_id) {
                         let _ = prev.webview.set_visible(false);
                     }
-                    if let Some(target) = runtimes.get(&tab_id) {
+                    if let Some(target) = runtimes.get(&tab_id).filter(|_| !locked && !overlay) {
                         let _ = target.webview.set_visible(true);
                         let _ = target.webview.focus();
                     }
@@ -837,8 +883,61 @@ fn main() -> wry::Result<()> {
                 IpcCommand::Ready => {
                     sync_tab_bar(&tab_bar, &config, &runtimes);
                     sync_maximized(&tab_bar, window.is_maximized());
+                    let _ = tab_bar.evaluate_script(&lock_state_script(config.lock.is_some(), locked));
+                    if locked {
+                        let _ = tab_bar.focus();
+                    }
+                }
+                IpcCommand::Lock => {
+                    if config.lock.is_some() {
+                        locked = true;
+                        overlay = false;
+                        apply_cover(&window, &tab_bar, &runtimes, config.active_id, true);
+                        let _ = tab_bar.evaluate_script(&lock_state_script(true, true));
+                    }
+                }
+                IpcCommand::Unlock { password } => {
+                    if config.lock.as_ref().is_none_or(|l| l.verify(&password)) {
+                        locked = false;
+                        apply_cover(&window, &tab_bar, &runtimes, config.active_id, overlay);
+                        let _ = tab_bar.evaluate_script(&lock_state_script(config.lock.is_some(), false));
+                    } else {
+                        let _ = tab_bar.evaluate_script(&lock_error_script("Senha incorreta."));
+                    }
+                }
+                IpcCommand::SetPassword { current, new } => {
+                    let error = if locked {
+                        Some("Desbloqueie primeiro.".to_string())
+                    } else if config.lock.as_ref().is_some_and(|l| !l.verify(&current)) {
+                        Some("Senha atual incorreta.".to_string())
+                    } else if !new.is_empty() && new.chars().count() < lock::MIN_LEN {
+                        Some(format!("A senha precisa de pelo menos {} caracteres.", lock::MIN_LEN))
+                    } else {
+                        config.lock = (!new.is_empty()).then(|| PasswordLock::new(&new));
+                        config.save(&config_path).err().map(|e| format!("Não deu para salvar: {e}"))
+                    };
+                    match error {
+                        Some(msg) => {
+                            let _ = tab_bar.evaluate_script(&lock_error_script(&msg));
+                        }
+                        None => {
+                            overlay = false;
+                            apply_cover(&window, &tab_bar, &runtimes, config.active_id, false);
+                            let _ = tab_bar.evaluate_script(PASSWORD_SAVED_SCRIPT);
+                            let _ = tab_bar.evaluate_script(&lock_state_script(config.lock.is_some(), false));
+                        }
+                    }
+                }
+                IpcCommand::Overlay { on } => {
+                    if !locked {
+                        overlay = on;
+                        apply_cover(&window, &tab_bar, &runtimes, config.active_id, on);
+                    }
                 }
                 IpcCommand::NewTab => {
+                    if locked || overlay {
+                        return;
+                    }
                     if let Some(prev) = runtimes.get(&config.active_id) {
                         let _ = prev.webview.set_visible(false);
                     }
@@ -872,7 +971,7 @@ fn main() -> wry::Result<()> {
                     }
                 }
                 IpcCommand::Switch { id } => {
-                    if id != config.active_id && runtimes.contains_key(&id) {
+                    if id != config.active_id && runtimes.contains_key(&id) && !locked && !overlay {
                         if let Some(prev) = runtimes.get(&config.active_id) {
                             let _ = prev.webview.set_visible(false);
                         }
@@ -886,6 +985,9 @@ fn main() -> wry::Result<()> {
                     }
                 }
                 IpcCommand::Close { id } => {
+                    if locked || overlay {
+                        return;
+                    }
                     runtimes.remove(&id);
                     if let Some(replacement) = config.remove_tab(id) {
                         let (_, current_content_bounds) = compute_bounds(&window);
@@ -921,13 +1023,13 @@ fn main() -> wry::Result<()> {
                     sync_tab_bar(&tab_bar, &config, &runtimes);
                 }
                 IpcCommand::Rename { id, name } => {
-                    if config.rename_tab(id, &name) {
+                    if !locked && config.rename_tab(id, &name) {
                         let _ = config.save(&config_path);
                         sync_tab_bar(&tab_bar, &config, &runtimes);
                     }
                 }
                 IpcCommand::Reload => {
-                    if let Some(active) = runtimes.get(&config.active_id) {
+                    if let Some(active) = runtimes.get(&config.active_id).filter(|_| !locked) {
                         let _ = active.webview.load_url(WHATSAPP_URL);
                     }
                 }

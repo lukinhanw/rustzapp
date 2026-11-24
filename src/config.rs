@@ -28,6 +28,9 @@ pub struct AppConfig {
     pub next_id: u64,
     pub active_id: u64,
     pub tabs: Vec<SavedTab>,
+    /// Senha para exibir o WhatsApp (só o hash); sem ela o app abre direto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<crate::lock::PasswordLock>,
 }
 
 impl Default for AppConfig {
@@ -40,6 +43,7 @@ impl Default for AppConfig {
                 name: "WhatsApp 1".to_string(),
                 profile_id: "wa_1".to_string(),
             }],
+            lock: None,
         }
     }
 }

@@ -72,6 +72,17 @@ pub fn set_maximized_script(maximized: bool) -> String {
     format!("window.setMaximized({maximized});")
 }
 
+pub fn lock_state_script(has_password: bool, locked: bool) -> String {
+    format!("window.setLockState({{\"hasPassword\":{has_password},\"locked\":{locked}}});")
+}
+
+pub fn lock_error_script(message: &str) -> String {
+    let json = serde_json::to_string(message).unwrap_or_else(|_| "\"\"".to_string());
+    format!("window.lockError({json});")
+}
+
+pub const PASSWORD_SAVED_SCRIPT: &str = "window.passwordSaved();";
+
 pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -312,6 +323,124 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
   body.maximized .icon-restore {
     display: block;
   }
+  #lock-btn svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+  }
+  /* Bloqueado: a barra mostra só arrastar e os botões da janela (nada de nomes
+     de abas ou contadores); o resto da janela é a tela de senha. */
+  body.locked #tabs,
+  body.locked #new-tab,
+  body.locked #reload-tab,
+  body.locked #lock-btn {
+    visibility: hidden;
+  }
+  /* Tela de senha: só existe com a WebView da barra esticada na janela toda. */
+  .overlay {
+    display: none;
+    position: fixed;
+    top: var(--bar-h);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    align-items: center;
+    justify-content: center;
+    background: #0b141a;
+  }
+  .overlay.show {
+    display: flex;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 320px;
+    padding: 28px;
+    border: 1px solid #222d34;
+    border-radius: 12px;
+    background: #111b21;
+    text-align: center;
+  }
+  .card svg {
+    align-self: center;
+    width: 40px;
+    height: 40px;
+    fill: none;
+    stroke: #00a884;
+    stroke-width: 1.6;
+  }
+  .card h2 {
+    margin: 4px 0 0;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .hint {
+    margin: 0 0 6px;
+    color: #8696a0;
+    font-size: 12px;
+  }
+  .card input {
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid #2a3942;
+    border-radius: 8px;
+    background: #202c33;
+    color: #e9edef;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .card input:focus {
+    border-color: #00a884;
+  }
+  .error {
+    min-height: 16px;
+    color: #f15c6d;
+    font-size: 12px;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+  .actions button {
+    height: 32px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .primary {
+    background: #00a884;
+    color: #111b21;
+    font-weight: 600;
+  }
+  .primary:hover {
+    background: #06cf9c;
+  }
+  .secondary {
+    background: #202c33;
+    color: #d1d7db;
+  }
+  .secondary:hover {
+    background: #2a3942;
+  }
+  .danger {
+    margin-right: auto;
+    background: transparent;
+    color: #f15c6d;
+  }
+  .hidden {
+    display: none !important;
+  }
 </style>
 </head>
 <body>
@@ -325,6 +454,9 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     <div id="tabs" class="tabs"></div>
     <button id="new-tab" class="icon-btn" title="Nova aba WhatsApp (cookies independentes)">+</button>
     <div class="drag-spacer" title="Arraste para mover a janela"></div>
+    <button id="lock-btn" class="icon-btn" title="Definir senha para exibir o WhatsApp">
+      <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    </button>
     <button id="reload-tab" class="icon-btn reload-btn" title="Recarregar aba ativa">&#8635;</button>
     <div class="win-controls">
       <button id="btn-min" class="win-btn" title="Minimizar" aria-label="Minimizar">
@@ -344,6 +476,22 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
         </svg>
       </button>
     </div>
+  </div>
+  <div id="overlay" class="overlay">
+    <form id="pw-form" class="card" autocomplete="off">
+      <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      <h2 id="pw-title"></h2>
+      <p id="pw-hint" class="hint"></p>
+      <input id="pw-current" type="password" placeholder="Senha">
+      <input id="pw-new" type="password" placeholder="Nova senha">
+      <input id="pw-confirm" type="password" placeholder="Repita a nova senha">
+      <div id="pw-error" class="error"></div>
+      <div class="actions">
+        <button type="button" id="pw-remove" class="danger">Remover senha</button>
+        <button type="button" id="pw-cancel" class="secondary">Cancelar</button>
+        <button type="submit" id="pw-ok" class="primary"></button>
+      </div>
+    </form>
   </div>
 <script>
   const barEl = document.getElementById("bar");
@@ -397,6 +545,118 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     isMaximized = Boolean(maximized);
     document.body.classList.toggle("maximized", isMaximized);
   };
+
+  // ---- senha para exibir o WhatsApp ----
+  // Modos da tela: "unlock" (bloqueado), "setup" (definir a primeira senha),
+  // "manage" (alterar ou remover). O app estica esta WebView na janela toda e
+  // esconde o WhatsApp enquanto a tela aparece.
+  const lockBtn = document.getElementById("lock-btn");
+  const overlayEl = document.getElementById("overlay");
+  const pwForm = document.getElementById("pw-form");
+  const pwTitle = document.getElementById("pw-title");
+  const pwHint = document.getElementById("pw-hint");
+  const pwCurrent = document.getElementById("pw-current");
+  const pwNew = document.getElementById("pw-new");
+  const pwConfirm = document.getElementById("pw-confirm");
+  const pwError = document.getElementById("pw-error");
+  const pwRemove = document.getElementById("pw-remove");
+  const pwCancel = document.getElementById("pw-cancel");
+  const pwOk = document.getElementById("pw-ok");
+  const MODES = {
+    unlock: { title: "WhatsApp bloqueado", hint: "Digite a senha para ver suas conversas.", ok: "Desbloquear", fields: [pwCurrent], current: "Senha" },
+    setup: { title: "Definir senha", hint: "Ela será pedida ao abrir o app e depois de clicar no cadeado.", ok: "Salvar", fields: [pwNew, pwConfirm], cancel: true },
+    manage: { title: "Alterar senha", hint: "Confirme a senha atual para trocar ou remover.", ok: "Salvar", fields: [pwCurrent, pwNew, pwConfirm], current: "Senha atual", cancel: true, remove: true },
+  };
+  let lockState = { hasPassword: false, locked: false };
+  let pwMode = null;
+
+  function showPw(mode) {
+    const m = MODES[mode];
+    pwMode = mode;
+    pwTitle.textContent = m.title;
+    pwHint.textContent = m.hint;
+    pwOk.textContent = m.ok;
+    pwCurrent.placeholder = m.current || "Senha";
+    for (const input of [pwCurrent, pwNew, pwConfirm]) {
+      input.value = "";
+      input.classList.toggle("hidden", !m.fields.includes(input));
+    }
+    pwCancel.classList.toggle("hidden", !m.cancel);
+    pwRemove.classList.toggle("hidden", !m.remove);
+    pwError.textContent = "";
+    document.body.classList.toggle("locked", mode === "unlock");
+    overlayEl.classList.add("show");
+    m.fields[0].focus();
+  }
+
+  function hidePw() {
+    pwMode = null;
+    for (const input of [pwCurrent, pwNew, pwConfirm]) input.value = "";
+    overlayEl.classList.remove("show");
+    document.body.classList.remove("locked");
+  }
+
+  function openPw(mode) {
+    showPw(mode);
+    send({ cmd: "overlay", on: true });
+  }
+
+  function cancelPw() {
+    if (pwMode === "unlock") return;
+    hidePw();
+    send({ cmd: "overlay", on: false });
+  }
+
+  lockBtn.addEventListener("click", () => {
+    if (lockState.hasPassword) send({ cmd: "lock" });
+    else openPw("setup");
+  });
+  lockBtn.addEventListener("contextmenu", () => {
+    if (lockState.hasPassword) openPw("manage");
+  });
+  pwCancel.addEventListener("click", cancelPw);
+  pwForm.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") cancelPw();
+  });
+  pwRemove.addEventListener("click", () => {
+    send({ cmd: "set_password", current: pwCurrent.value, new: "" });
+  });
+  pwForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (pwMode === "unlock") {
+      send({ cmd: "unlock", password: pwCurrent.value });
+      return;
+    }
+    if (!pwNew.value) {
+      window.lockError("Digite a nova senha.");
+      return;
+    }
+    if (pwNew.value !== pwConfirm.value) {
+      window.lockError("As senhas não conferem.");
+      return;
+    }
+    send({ cmd: "set_password", current: pwCurrent.value, new: pwNew.value });
+  });
+
+  window.setLockState = function(state) {
+    lockState = state;
+    lockBtn.title = state.hasPassword
+      ? "Bloquear agora (clique direito: alterar ou remover a senha)"
+      : "Definir senha para exibir o WhatsApp";
+    if (state.locked) showPw("unlock");
+    else if (pwMode === "unlock") hidePw();
+  };
+
+  window.lockError = function(message) {
+    pwError.textContent = message;
+    const first = MODES[pwMode] && MODES[pwMode].fields[0];
+    if (first) {
+      first.focus();
+      first.select();
+    }
+  };
+
+  window.passwordSaved = hidePw;
 
   function startRename(tab, labelEl) {
     editingId = tab.id;
@@ -517,6 +777,10 @@ mod tests {
 
         assert_eq!(set_maximized_script(true), "window.setMaximized(true);");
         assert_eq!(set_maximized_script(false), "window.setMaximized(false);");
+
+        assert_eq!(lock_state_script(true, false), r#"window.setLockState({"hasPassword":true,"locked":false});"#);
+        // a mensagem vai como string JSON: aspas e quebras não escapam do script
+        assert_eq!(lock_error_script("a\"b\n"), r#"window.lockError("a\"b\n");"#);
     }
 
     #[test]

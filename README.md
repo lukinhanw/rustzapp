@@ -40,6 +40,7 @@ Sem Electron, sem Node.js e sem empacotar um Chromium inteiro — ele usa o **Mi
   - **Badge vermelho numérico** sobre o ícone na barra de tarefas padrão do Windows (`ITaskbarList4::SetOverlayIcon`).
   - **Ícone dinâmico na bandeja do sistema** (`Shell_NotifyIconW`), exibindo o contador ao vivo inclusive na barra [**WinRust (`topbar`)**](https://github.com/Lemxy/WinRust).
 - **Persistência automática**: suas abas abertas, nomes personalizados e logins (QR Code) permanecem salvos entre reinicializações.
+- **Senha para exibir o WhatsApp (opcional)**: com senha definida, o app abre bloqueado e o cadeado da barra bloqueia na hora. Bloqueado, nomes de abas e contadores somem da barra e as notificações não mostram contato nem texto. Só um hash PBKDF2-SHA256 com sal fica em `tabs.json`. É uma trava de tela: os dados do WebView2 no disco não são criptografados.
 - **Instância única amigável**: se o diretório de sessão já estiver em uso, restaura e foca a janela já aberta em vez de duplicar processos.
 
 ---
@@ -54,6 +55,8 @@ Sem Electron, sem Node.js e sem empacotar um Chromium inteiro — ele usa o **Mi
 | **Fechar aba** | Clique no **`×`** da aba (ao fechar a última, uma nova aba limpa é criada) |
 | **Recarregar aba ativa** | Clique no botão **`↻`** |
 | **Mover / Maximizar janela** | Arraste pela área vazia da barra superior (duplo clique maximiza/restaura) |
+| **Definir senha / bloquear** | Clique no **cadeado** da barra (sem senha: define; com senha: bloqueia na hora) |
+| **Alterar ou remover a senha** | **Clique direito** no cadeado e confirme a senha atual |
 | **Fixar contador na barra WinRust (`topbar`)** | Abra o chevron **`^`** da bandeja e clique com o **botão do meio** no ícone do RustZapp |
 
 ---
@@ -80,6 +83,7 @@ flowchart LR
 | :--- | :--- |
 | [`src/main.rs`](src/main.rs) | Janela sem bordas (`tao`), criação das WebViews (`wry`), bloqueio de URLs/pop-ups, controle de abas, `TrayIcon` Win32 e instância única |
 | [`src/config.rs`](src/config.rs) | Persistência em `tabs.json`, gerenciamento de perfis, parser de não lidas e allowlist de URLs |
+| [`src/lock.rs`](src/lock.rs) | Senha para exibir o WhatsApp: hash PBKDF2-HMAC-SHA256 com sal e verificação em tempo constante |
 | [`src/tab_bar.rs`](src/tab_bar.rs) | Barra superior HTML/CSS/JS autocontida com tema escuro do WhatsApp e comunicação IPC |
 | [`src/badge.rs`](src/badge.rs) | Renderizador RGBA `32×32` em Rust puro para o ícone base da bandeja e badges numéricos (`1`–`99+`) |
 | [`build.rs`](build.rs) | Embute `assets/icon.ico` e metadados no executável Windows via `winresource` |
