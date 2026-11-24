@@ -23,6 +23,51 @@ pub fn render_tabs_script(active_id: u64, tabs: &[TabViewState]) -> String {
     format!("window.renderTabs({json});")
 }
 
+/// "Tamanho do texto" de Acessibilidade do Windows (`TextScaleFactor`, 100-225%)
+/// como fator (1.0 = 100%). Fora do Windows, ou sem o valor, 1.0.
+pub fn windows_text_scale() -> f64 {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        const HKEY_CURRENT_USER: isize = 0x8000_0001_u32 as i32 as isize;
+        const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
+
+        #[link(name = "advapi32")]
+        extern "system" {
+            fn RegGetValueW(
+                hkey: isize,
+                sub_key: *const u16,
+                value: *const u16,
+                flags: u32,
+                kind: *mut u32,
+                data: *mut c_void,
+                data_len: *mut u32,
+            ) -> i32;
+        }
+
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let key = wide(r"Software\Microsoft\Accessibility");
+        let name = wide("TextScaleFactor");
+        let mut value: u32 = 0;
+        let mut len = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                &mut value as *mut u32 as *mut c_void,
+                &mut len,
+            )
+        };
+        if status == 0 && (100..=225).contains(&value) {
+            return f64::from(value) / 100.0;
+        }
+    }
+    1.0
+}
+
 pub fn set_maximized_script(maximized: bool) -> String {
     format!("window.setMaximized({maximized});")
 }
@@ -32,6 +77,16 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <style>
+  /* Folga igual (--gap) em cima, embaixo, nas laterais e entre itens.
+     --bar-h é a altura da faixa da barra na janela (TAB_BAR_HEIGHT, 40px
+     lógicos). O app compensa o "Tamanho do texto" do Windows com zoom nesta
+     WebView, então 1px CSS = 1px lógico. Não usar 100vh: com escala de texto o
+     WebView2 arredonda o viewport para cima e a base da barra ficaria cortada. */
+  :root {
+    --bar-h: 40px;
+    --gap: 6px;
+    --item: calc(var(--bar-h) - 2 * var(--gap));
+  }
   * {
     box-sizing: border-box;
     user-select: none;
@@ -48,31 +103,33 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
     font-size: 13px;
   }
+  /* Espaçamento uniforme: 6px em cima, embaixo, nas laterais e entre itens
+     (barra de 40px, itens de 28px). A linha divisória é desenhada por dentro
+     (box-shadow) para não roubar altura da centralização. */
   .bar {
     display: flex;
     align-items: center;
-    height: 40px;
-    padding: 0 0 0 10px;
-    border-bottom: 1px solid #222d34;
+    gap: var(--gap);
+    height: var(--bar-h);
+    padding: 0 0 0 var(--gap);
+    box-shadow: inset 0 -1px 0 #222d34;
     background: #111b21;
   }
   .app-logo {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
-    margin-right: 8px;
+    width: var(--item);
+    height: var(--item);
     flex-shrink: 0;
   }
   .tabs {
     display: flex;
-    align-items: flex-end;
-    gap: 4px;
+    align-items: center;
+    gap: var(--gap);
     flex: 0 1 auto;
     min-width: 0;
     height: 100%;
-    padding-top: 6px;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -84,17 +141,16 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 33px;
+    height: var(--item);
     max-width: 200px;
     min-width: 90px;
-    padding: 0 8px 0 11px;
-    border-radius: 8px 8px 0 0;
+    padding: 0 6px 0 10px;
+    border-radius: 6px;
     background: #182229;
     color: #8696a0;
     cursor: pointer;
     flex-shrink: 0;
     border: 1px solid transparent;
-    border-bottom: none;
     transition: background 0.12s ease, color 0.12s ease;
   }
   .tab:hover {
@@ -104,8 +160,7 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
   .tab.active {
     background: #202c33;
     color: #e9edef;
-    border-color: #2a3942;
-    box-shadow: inset 0 2px 0 #00a884;
+    border-color: #00a884;
   }
   .dot {
     width: 7px;
@@ -126,7 +181,7 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
   }
   .rename-input {
     width: 112px;
-    height: 22px;
+    height: calc(var(--item) - 6px);
     border: 1px solid #00a884;
     border-radius: 4px;
     background: #111b21;
@@ -174,9 +229,8 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    margin-left: 6px;
+    width: var(--item);
+    height: var(--item);
     border: none;
     border-radius: 6px;
     background: #202c33;
@@ -195,16 +249,17 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     min-width: 36px;
     height: 100%;
   }
-  .reload-btn {
-    margin-right: 6px;
-  }
+  /* Área clicável vai até a borda/canto da janela (bom com a janela
+     maximizada); só o fundo do hover respeita as margens de 6px. */
   .win-controls {
     display: flex;
     align-items: stretch;
     height: 100%;
+    margin-left: calc(var(--gap) / -2);
     flex-shrink: 0;
   }
   .win-btn {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -215,17 +270,33 @@ pub const TAB_BAR_HTML: &str = r##"<!DOCTYPE html>
     color: #d1d7db;
     cursor: pointer;
     padding: 0;
-    transition: background 0.1s ease, color 0.1s ease;
+    transition: color 0.1s ease;
+  }
+  .win-btn::before {
+    content: "";
+    position: absolute;
+    inset: var(--gap) calc(var(--gap) / 2);
+    border-radius: 6px;
+    background: transparent;
+    transition: background 0.1s ease;
+  }
+  .win-btn.close-win {
+    width: calc(46px + var(--gap) / 2);
+  }
+  .win-btn.close-win::before {
+    inset: var(--gap) var(--gap) var(--gap) calc(var(--gap) / 2);
   }
   .win-btn:hover {
-    background: #2a3942;
     color: #ffffff;
   }
-  .win-btn.close-win:hover {
+  .win-btn:hover::before {
+    background: #2a3942;
+  }
+  .win-btn.close-win:hover::before {
     background: #e81123;
-    color: #ffffff;
   }
   .win-btn svg {
+    position: relative;
     width: 10px;
     height: 10px;
     stroke: currentColor;
@@ -446,5 +517,11 @@ mod tests {
 
         assert_eq!(set_maximized_script(true), "window.setMaximized(true);");
         assert_eq!(set_maximized_script(false), "window.setMaximized(false);");
+    }
+
+    #[test]
+    fn css_bar_height_matches_window_strip() {
+        let expected = format!("--bar-h: {}px;", TAB_BAR_HEIGHT);
+        assert!(TAB_BAR_HTML.contains(&expected), "atualize --bar-h no CSS para {expected}");
     }
 }
