@@ -436,6 +436,12 @@ enum UserEvent {
         tab_id: u64,
         notif_id: u64,
     },
+    /// Um download terminou (com ou sem sucesso) em alguma aba.
+    DownloadFinished {
+        tab_id: u64,
+        path: Option<std::path::PathBuf>,
+        success: bool,
+    },
     #[cfg(target_os = "windows")]
     RestoreWindow,
     #[cfg(target_os = "windows")]
@@ -502,6 +508,7 @@ fn create_whatsapp_webview(
 ) -> wry::Result<WebView> {
     let tab_id = saved.id;
     let ipc_proxy = proxy.clone();
+    let download_proxy = proxy.clone();
     let mut builder = WebViewBuilder::new_with_web_context(web_context)
         .with_url(WHATSAPP_URL)
         .with_bounds(bounds)
@@ -542,6 +549,11 @@ fn create_whatsapp_webview(
                 });
             }
         })
+        // O WebView2 salva em Downloads por conta própria, mas o aviso de download
+        // dele não aparece nesta janela: o app mostra um aviso do Windows.
+        .with_download_completed_handler(move |_url, path, success| {
+            let _ = download_proxy.send_event(UserEvent::DownloadFinished { tab_id, path, success });
+        })
         .with_document_title_changed_handler(move |title| {
             let _ = proxy.send_event(UserEvent::TitleChanged { tab_id, title });
         });
@@ -549,6 +561,18 @@ fn create_whatsapp_webview(
     #[cfg(target_os = "windows")]
     {
         builder = builder.with_profile_name(&saved.profile_id);
+        // Como no navegador: cada download pergunta onde salvar ("Salvar como").
+        // Cancelar a janela cancela o download.
+        let owner = window.hwnd();
+        builder = builder.with_download_started_handler(move |_url, path| {
+            match external::ask_save_path(owner, path) {
+                Some(chosen) => {
+                    *path = chosen;
+                    true
+                }
+                None => false,
+            }
+        });
     }
 
     builder.build_as_child(window)
@@ -839,6 +863,49 @@ fn main() -> wry::Result<()> {
                 }
                 #[cfg(not(target_os = "windows"))]
                 let _ = (tab_id, notif_id, title, body, silent);
+            }
+            Event::UserEvent(UserEvent::DownloadFinished { tab_id, path, success }) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let tab_name = if config.tabs.len() > 1 {
+                        config.tabs.iter().find(|t| t.id == tab_id).map(|t| t.name.as_str())
+                    } else {
+                        None
+                    };
+                    match path.filter(|_| success) {
+                        Some(path) => {
+                            let file_name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            let hint = if external::is_risky_to_open(&path) {
+                                "Salvo em Downloads · clique para abrir a pasta"
+                            } else {
+                                "Salvo em Downloads · clique para abrir"
+                            };
+                            let body = format!("{file_name}
+{hint}");
+                            notify::show_windows_toast(
+                                &toast_icon_path,
+                                tab_name,
+                                "Download concluído",
+                                &body,
+                                true,
+                                move || external::open_downloaded_file(&path),
+                            );
+                        }
+                        None => notify::show_windows_toast(
+                            &toast_icon_path,
+                            tab_name,
+                            "Download não concluído",
+                            "O arquivo não foi salvo (cancelado ou falha de rede).",
+                            true,
+                            || {},
+                        ),
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                let _ = (tab_id, path, success);
             }
             #[cfg(target_os = "windows")]
             Event::UserEvent(UserEvent::NotificationClicked { tab_id, notif_id }) => {

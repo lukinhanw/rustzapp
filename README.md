@@ -39,6 +39,7 @@ Sem Electron, sem Node.js e sem empacotar um Chromium inteiro — ele usa o **Mi
   - Soma total no título da janela.
   - **Badge vermelho numérico** sobre o ícone na barra de tarefas padrão do Windows (`ITaskbarList4::SetOverlayIcon`).
   - **Ícone dinâmico na bandeja do sistema** (`Shell_NotifyIconW`), exibindo o contador ao vivo inclusive na barra [**WinRust (`topbar`)**](https://github.com/Lemxy/WinRust).
+- **Downloads como no navegador**: ao baixar foto ou documento abre a janela **"Salvar como"** do Windows (Downloads e nome original já preenchidos; cancelar não baixa). Ao terminar, uma notificação abre o arquivo com um clique — programas e scripts (`.exe`, `.msi`, `.bat`...) abrem só a pasta, nunca são executados.
 - **Persistência automática**: suas abas abertas, nomes personalizados e logins (QR Code) permanecem salvos entre reinicializações.
 - **Senha para exibir o WhatsApp (opcional)**: com senha definida, o app abre bloqueado e o cadeado da barra bloqueia na hora. Bloqueado, nomes de abas e contadores somem da barra e as notificações não mostram contato nem texto. Só um hash PBKDF2-SHA256 com sal fica em `tabs.json`. É uma trava de tela: os dados do WebView2 no disco não são criptografados.
 - **Instância única amigável**: se o diretório de sessão já estiver em uso, restaura e foca a janela já aberta em vez de duplicar processos.
