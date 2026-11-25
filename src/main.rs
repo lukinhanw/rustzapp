@@ -867,24 +867,37 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(UserEvent::DownloadFinished { tab_id, path, success }) => {
                 #[cfg(target_os = "windows")]
                 {
-                    let tab_name = if config.tabs.len() > 1 {
+                    let tab_name = if config.tabs.len() > 1 && !locked {
                         config.tabs.iter().find(|t| t.id == tab_id).map(|t| t.name.as_str())
                     } else {
                         None
                     };
                     match path.filter(|_| success) {
+                        // bloqueado: não revela o arquivo nem deixa abri-lo pelo balão
+                        Some(_) if locked => notify::show_windows_toast(
+                            &toast_icon_path,
+                            None,
+                            "Download concluído",
+                            "Desbloqueie o WhatsApp para ver o arquivo.",
+                            true,
+                            || {},
+                        ),
                         Some(path) => {
                             let file_name = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| path.display().to_string());
-                            let hint = if external::is_risky_to_open(&path) {
-                                "Salvo em Downloads · clique para abrir a pasta"
+                            let folder = path
+                                .parent()
+                                .and_then(|d| d.file_name())
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let action = if external::is_risky_to_open(&path) {
+                                "clique para abrir a pasta"
                             } else {
-                                "Salvo em Downloads · clique para abrir"
+                                "clique para abrir"
                             };
-                            let body = format!("{file_name}
-{hint}");
+                            let body = format!("{file_name}\nSalvo em {folder} · {action}");
                             notify::show_windows_toast(
                                 &toast_icon_path,
                                 tab_name,
